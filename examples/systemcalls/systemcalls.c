@@ -146,7 +146,7 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
 
     bool result = true;
     int status = 0;
-    int fd = open("/home/sherif/Desktop/sh/Embedded_Linux/Assignment_1/assignment-1-SherifOmarAbdelAziz/testfile.txt", O_RDWR|O_CREAT, 0666);
+    int fd = open(outputfile, O_RDWR|O_CREAT, 0666);
     char temp = 1;
     
     if (count < 3)
