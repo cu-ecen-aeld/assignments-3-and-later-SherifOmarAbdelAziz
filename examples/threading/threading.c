@@ -13,7 +13,35 @@ void* threadfunc(void* thread_param)
 
     // TODO: wait, obtain mutex, wait, release mutex as described by thread_data structure
     // hint: use a cast like the one below to obtain thread arguments from your parameter
-    //struct thread_data* thread_func_args = (struct thread_data *) thread_param;
+    
+    printf("***************************\n");
+    printf("Starting Thread\n");       
+    struct thread_data* thread_func_args = (struct thread_data *) thread_param;
+
+    usleep((thread_func_args->wait_to_obtain_ms)/1000);
+
+    int result = pthread_mutex_lock(thread_func_args->mutex);
+    if(result != 0)
+    {
+    	thread_func_args->thread_complete_success = false;
+       	printf("***************************\n");
+    	ERROR_LOG("Error while obtaining mutex");
+       	printf("***************************\n");    	
+    }
+
+    usleep((thread_func_args->wait_to_release_ms)/1000);
+    
+    result = pthread_mutex_unlock(thread_func_args->mutex);
+    if(result != 0)
+    {
+    	thread_func_args->thread_complete_success = false;
+       	printf("***************************\n");    	
+    	ERROR_LOG("Error while releasing mutex");
+       	printf("***************************\n");   	
+    }
+    
+    thread_func_args->thread_complete_success = true;
+    
     return thread_param;
 }
 
@@ -28,6 +56,23 @@ bool start_thread_obtaining_mutex(pthread_t *thread, pthread_mutex_t *mutex,int 
      *
      * See implementation details in threading.h file comment block
      */
-    return false;
+    bool thread_completion_status = false;
+    struct thread_data *th_data = malloc(sizeof(struct thread_data));
+
+    th_data->mutex = mutex;
+    th_data->wait_to_obtain_ms = wait_to_obtain_ms;
+    th_data->wait_to_release_ms = wait_to_release_ms;
+    th_data->thread_complete_success = thread_completion_status;
+    
+    int result = pthread_create(thread, NULL, threadfunc, (void *)th_data);
+    if (result != 0)
+    {
+    	printf("***************************\n");
+    	ERROR_LOG("Error while creating thread");
+    	printf("***************************\n");    	
+    	return false;
+    }     
+
+    return true;
 }
 
