@@ -3,7 +3,7 @@
 CC=$(CROSS_COMPILE)gcc
 CFLAGS=-g -Wall
 
-default:
+all:
 	$(CC) $(CFLAGS) -o writer writer.c
 
 clean:
