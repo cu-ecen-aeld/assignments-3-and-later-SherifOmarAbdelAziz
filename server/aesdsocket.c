@@ -16,11 +16,8 @@
 #include <arpa/inet.h>
 
 #define OUTPUT_FILE "/var/tmp/aesdsocketdata"
-#define OUTPUT_FILE2 "/var/tmp/aesdsocketdata2"
 #define CONNECTION_PENDING_QUEUE 50
 #define BUFFER_SIZE 256
-
-bool caught_SIGINT = false, caught_SIGTERM = false;
 
 void regsiter_to_SIGINT_SIGTERM();
 
