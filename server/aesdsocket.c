@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/stat.h>
 
 #define OUTPUT_FILE "/var/tmp/aesdsocketdata"
 #define CONNECTION_PENDING_QUEUE 50
