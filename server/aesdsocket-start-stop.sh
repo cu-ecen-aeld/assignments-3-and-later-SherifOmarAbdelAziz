@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # aesdsocket-start-stop
 
 
