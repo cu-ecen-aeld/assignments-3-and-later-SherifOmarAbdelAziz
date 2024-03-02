@@ -15,10 +15,11 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/stat.h>
+#include <pthread.h>
 
 #define OUTPUT_FILE "/var/tmp/aesdsocketdata"
 #define CONNECTION_PENDING_QUEUE 50
-#define BUFFER_SIZE 256
+#define BUFFER_SIZE 1024
 
 void regsiter_to_SIGINT_SIGTERM();
 
@@ -27,6 +28,109 @@ bool run_as_daemon(int argc, char**argv);
 void start_as_daemon();
 
 int fd_global = 0;
+
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
+pthread_t timestamp_thread_id;
+
+struct thread_linked_list_node
+{
+	pthread_t thread_id;
+	bool completion_flag;
+	struct thread_linked_list_node *next;
+} ;
+
+struct thread_args
+{
+	int connection_fd;
+	struct thread_linked_list_node *thread_info;
+	struct sockaddr_in addr_in;
+} ;
+
+
+void* timestamp_thread (void *args)
+{
+	while(1)
+	{	
+		sleep(10);
+		time_t now = time(NULL);
+		struct tm* tm_info = localtime(&now);
+		char timestamp[64];
+		strftime(timestamp, sizeof(timestamp), "Writing timestamp: %a, %d %b %Y %T %z\n", tm_info);
+		pthread_mutex_lock (&mutex);	
+		int fd_write = open(OUTPUT_FILE, O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR);	
+		write(fd_write, timestamp, strlen(timestamp));
+		close(fd_write);
+		pthread_mutex_unlock (&mutex);
+		
+	}
+	pthread_exit(NULL);
+}
+
+
+void* handle_accepted_connection (void *arg)
+{	
+	struct thread_args *argv = (struct thread_args *)(arg);
+	int cfd = argv->connection_fd;
+	argv->thread_info->completion_flag = false;
+	char buf[BUFFER_SIZE];
+	ssize_t nbytes;
+	while ((nbytes = recv(cfd, buf, sizeof(buf), 0)) > 0)
+	{
+		pthread_mutex_lock (&mutex);
+		int fd_write = open(OUTPUT_FILE, O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR);
+		write(fd_write, buf, nbytes);
+		close(fd_write);
+		
+		if (memchr(buf, '\n', nbytes) != NULL)
+		{	
+			// packet is complete, string has a new line character
+			int fd_read = open(OUTPUT_FILE, O_RDONLY);
+			char buffer_to_send[BUFFER_SIZE];
+			ssize_t nbytes_to_send;
+			while ((nbytes_to_send = read(fd_read, buffer_to_send, sizeof(buffer_to_send))) > 0)
+			{
+				syslog(LOG_DEBUG, "Read %d bytes from tmp file", (int) nbytes_to_send);
+				int sent_bytes = send(cfd, buffer_to_send, nbytes_to_send, 0);   		
+				if (sent_bytes <= 0) 
+				{
+					// got error or connection closed by client
+					if (sent_bytes == 0) 
+					{
+					    	// connection closed
+					    	printf("selectserver: socket %d hung up\n", cfd);
+					} 
+					else 
+					{
+				    		perror("send");
+					}
+					close(cfd); 
+					syslog(LOG_DEBUG, "Closed connection from %s\n", inet_ntoa(argv->addr_in.sin_addr));
+				 }
+				 else
+				 {
+					// no error from send
+					syslog(LOG_DEBUG, "Sent %d bytes from %s\n", sent_bytes, inet_ntoa(argv->addr_in.sin_addr));	 
+				 }					
+			}
+			close(fd_read);	
+		}
+	}
+	if (nbytes == 0)
+	{
+		// connection closed
+	    	printf("selectserver: socket %d hung up\n", cfd);
+	    	argv->thread_info->completion_flag = true;
+	    	free(argv);
+	    	pthread_mutex_unlock (&mutex);
+	}
+	else 
+	{
+		perror("recv");
+	}
+	pthread_exit(NULL);
+}
+
 
 int main (int argc, char**argv)
 {	
@@ -86,12 +190,20 @@ int main (int argc, char**argv)
 		exit(EXIT_FAILURE);	
 	}
 
+	if (pthread_create(&timestamp_thread_id, NULL, &timestamp_thread, NULL) != 0)
+	{	
+		return -1;
+	}
+
+	struct thread_linked_list_node *head = NULL, *current = NULL;	
+	
 	struct sockaddr_in addr_in;
 	socklen_t addrlen;
         while(1)
-        {
+        {	      
         	addrlen = sizeof(addr_in);
-		int cfd = accept(sfd, (struct sockaddr *) &addr_in, &addrlen);
+		int cfd = accept(sfd, (struct sockaddr *) &addr_in, &addrlen);		
+		
 		if (cfd == -1)
 		{	
 			exit(EXIT_FAILURE);	
@@ -101,59 +213,72 @@ int main (int argc, char**argv)
 			syslog(LOG_DEBUG, "Accepted connection from %s\n", (const char *) inet_ntoa(addr_in.sin_addr));
 		}
 		
-		char buf[BUFFER_SIZE];
-		ssize_t nbytes;
-		while ((nbytes = recv(cfd, buf, sizeof(buf), 0)) > 0)
-		{
-			int fd_write = open(OUTPUT_FILE, O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR);
-			write(fd_write, buf, nbytes);
-			close(fd_write);
-			
-			if (memchr(buf, '\n', nbytes) != NULL)
-			{	
-				// packet is complete, string has a new line character
-				int fd_read = open(OUTPUT_FILE, O_RDONLY);
-				char buffer_to_send[BUFFER_SIZE];
-				ssize_t nbytes_to_send;
-				while ((nbytes_to_send = read(fd_read, buffer_to_send, sizeof(buffer_to_send))) > 0)
-				{
-					syslog(LOG_DEBUG, "Read %d bytes from tmp file", (int) nbytes_to_send);
-					int sent_bytes = send(cfd, buffer_to_send, nbytes_to_send, 0);   		
-					if (sent_bytes <= 0) 
-					{
-						// got error or connection closed by client
-						if (sent_bytes == 0) 
-						{
-						    	// connection closed
-						    	printf("selectserver: socket %d hung up\n", cfd);
-						} 
-						else 
-						{
-					    		perror("send");
-						}
-						close(cfd); 
-						syslog(LOG_DEBUG, "Closed connection from %s\n", inet_ntoa(addr_in.sin_addr));
-					 }
-					 else
-					 {
-						// no error from send
-						syslog(LOG_DEBUG, "Sent %d bytes from %s\n", sent_bytes, inet_ntoa(addr_in.sin_addr));			 
-					 }					
-				}
-				close(fd_read);	
-			}
-		}
+		// creating new node in linked list
+		struct thread_linked_list_node *new_node = (struct thread_linked_list_node *) malloc(sizeof(struct thread_linked_list_node));
+		new_node->completion_flag = false;	
+		new_node->next = NULL;
 		
-		if (nbytes == 0)
+			
+		// thread creation 
+		pthread_t th_id;
+		struct thread_args *args = (struct thread_args *) malloc(sizeof(struct thread_args));
+		args->connection_fd = cfd;
+		args->thread_info = new_node;
+		args->addr_in = addr_in;
+		
+		if (pthread_create(&th_id, NULL, &handle_accepted_connection, args) != 0)
 		{
-			// connection closed
-		    	printf("selectserver: socket %d hung up\n", cfd);
+			return -1;
+		}		
+		new_node->thread_id = th_id;
+			
+		
+		if(head == NULL)
+		{
+			head = current = new_node;
 		}
 		else 
 		{
-			perror("recv");
+			// add new node to the linked list
+			current->next = new_node;
+			current = new_node;		
+		}
+		
+		struct thread_linked_list_node *prev = NULL, *current_loc = head;
+		// Check if thread if complete and remove from list and join after completion
+		while(current_loc != NULL)
+		{
+			if(current_loc->completion_flag)
+			{
+				if(pthread_join(current_loc->thread_id, NULL) != 0)
+				{
+					printf("pthread_join returned error.\n");
+				}
+				else
+				{
+					struct thread_linked_list_node *temp = current_loc;
+					// free linked list from this thread entry
+					if (current_loc == head)
+					{
+						current_loc = head = head->next;
+					}
+					else 
+					{
+						prev->next = current_loc->next;
+						current_loc = current_loc->next;					
+					}
+					free(temp);
+				}	
+			}	
+			else
+			{
+				prev = current_loc;
+				current_loc = current_loc->next;			
+			}	
 		}
         }
+        
+        pthread_join(timestamp_thread_id, NULL);
 
 	return 0;
 }
@@ -208,8 +333,11 @@ void signal_handler(int signal_number)
 		syslog(LOG_DEBUG, "Caught signal, exiting");
 		unlink(OUTPUT_FILE);
 		shutdown(fd_global, SHUT_RDWR);
-		closelog();
+		closelog();		
 	}
+	
+	// cleanup
+    	pthread_mutex_destroy(&mutex);
 }
 
 void regsiter_to_SIGINT_SIGTERM()
